@@ -2,13 +2,12 @@
  * Sight v2.0 — Serverless AI Proxy
  * api/analyze.js (Vercel Serverless Function)
  *
- * Accepts POST requests with { prompt, image? }
- * API key is read from environment OR from X-Api-Key header (user's key)
- * The key is NEVER sent back to the client or logged beyond server scope.
+ * Uses Groq API with llama-3.3-70b-versatile
+ * To swap models later, just change GROQ_MODEL below.
  */
 
-const GEMINI_API_URL =
-  'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent';
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL   = 'llama-3.3-70b-versatile';
 
 export default async function handler(req, res) {
   // ─── CORS ──────────────────────────────────────────────────────
@@ -19,12 +18,10 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  // ─── API Key resolution ─────────────────────────────────────────
-  // Only reads from server environment — never from client headers
-  const apiKey = process.env.GEMINI_API_KEY;
-
+  // ─── API Key ────────────────────────────────────────────────────
+  const apiKey = process.env.GROQ_API_KEY;
   if (!apiKey) {
-    return res.status(401).json({ error: 'GEMINI_API_KEY not configured in Vercel environment variables.' });
+    return res.status(401).json({ error: 'GROQ_API_KEY not configured in Vercel environment variables.' });
   }
 
   // ─── Input validation ───────────────────────────────────────────
@@ -38,52 +35,43 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Prompt too long.' });
   }
 
-  // ─── Build Gemini request ───────────────────────────────────────
-  const parts = [{ text: prompt }];
+  // ─── Build messages ─────────────────────────────────────────────
+  const messages = [
+    { role: 'user', content: prompt }
+  ];
 
-  if (image && typeof image === 'string' && image.length < 3000000) {
-    parts.push({
-      inlineData: {
-        mimeType: 'image/jpeg',
-        data: image,
-      },
-    });
-  }
-
-  const geminiBody = {
-    contents: [{ parts }],
-    generationConfig: {
-      temperature: 0.4,
-      maxOutputTokens: 2048,
-    },
-    safetySettings: [
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-    ],
+  const groqBody = {
+    model:       GROQ_MODEL,
+    messages,
+    temperature: 0.4,
+    max_tokens:  4096,
   };
 
   try {
-    const geminiRes = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(geminiBody),
+    const groqRes = await fetch(GROQ_API_URL, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(groqBody),
     });
 
-    if (!geminiRes.ok) {
-      const errText = await geminiRes.text();
-      console.error('Gemini error:', geminiRes.status, errText.slice(0, 200));
+    if (!groqRes.ok) {
+      const errText = await groqRes.text();
+      console.error('Groq error:', groqRes.status, errText.slice(0, 200));
 
-      if (geminiRes.status === 400 || geminiRes.status === 403) {
-        return res.status(401).json({ error: 'Invalid API key.' });
+      if (groqRes.status === 401 || groqRes.status === 403) {
+        return res.status(401).json({ error: 'Invalid Groq API key.' });
       }
-      if (geminiRes.status === 429) {
+      if (groqRes.status === 429) {
         return res.status(429).json({ error: 'Rate limit hit. Wait a moment and try again.' });
       }
       return res.status(502).json({ error: 'AI service error. Please try again.' });
     }
 
-    const data = await geminiRes.json();
-    const result = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const data   = await groqRes.json();
+    const result = data?.choices?.[0]?.message?.content || '';
 
     if (!result) {
       return res.status(502).json({ error: 'Empty response from AI.' });
