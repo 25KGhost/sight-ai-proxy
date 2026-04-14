@@ -2,12 +2,13 @@
  * Sight v2.0 — Serverless AI Proxy
  * api/analyze.js (Vercel Serverless Function)
  *
- * Uses Groq API with llama-3.3-70b-versatile
- * To swap models later, just change GROQ_MODEL below.
+ * Text-only calls → llama-3.3-70b-versatile (fast, smart, great JSON)
+ * Vision calls (image attached) → meta-llama/llama-4-scout-17b-16e-instruct (free vision model)
  */
 
-const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL   = 'llama-3.3-70b-versatile';
+const GROQ_API_URL    = 'https://api.groq.com/openai/v1/chat/completions';
+const MODEL_TEXT      = 'llama-3.3-70b-versatile';
+const MODEL_VISION    = 'meta-llama/llama-4-scout-17b-16e-instruct';
 
 export default async function handler(req, res) {
   // ─── CORS ──────────────────────────────────────────────────────
@@ -35,16 +36,29 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Prompt too long.' });
   }
 
-  // ─── Build messages ─────────────────────────────────────────────
-  const messages = [
-    { role: 'user', content: prompt }
-  ];
+  // ─── Choose model + build messages ─────────────────────────────
+  const hasImage = image && typeof image === 'string' && image.length < 3000000;
+  const model    = hasImage ? MODEL_VISION : MODEL_TEXT;
+
+  let messageContent;
+  if (hasImage) {
+    // Vision model expects content as array with image_url block
+    messageContent = [
+      { type: 'text', text: prompt },
+      {
+        type: 'image_url',
+        image_url: { url: `data:image/jpeg;base64,${image}` },
+      },
+    ];
+  } else {
+    messageContent = prompt;
+  }
 
   const groqBody = {
-    model:       GROQ_MODEL,
-    messages,
+    model,
+    messages: [{ role: 'user', content: messageContent }],
     temperature: 0.4,
-    max_tokens:  4096,
+    max_tokens:  1024,
   };
 
   try {
